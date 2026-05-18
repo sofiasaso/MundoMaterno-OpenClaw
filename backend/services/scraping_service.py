@@ -1,564 +1,448 @@
-# ==============================================================================
-# ARCHIVO 10: /backend/services/scraping_service.py
-# TIPO: Servicio de lógica de negocio / Coordinador de scrapers (Python)
-# FUNCIÓN: Cerebro del sistema de inteligencia competitiva de Mundo Materno.
-#          Contiene los scrapers REALES para Carymar, Saraisa y OhMama,
-#          basados en el notebook del equipo (Ropamaterna_web_scrapping).
-#          Coordina la extracción, normaliza precios, detecta duplicados,
-#          registra cambios de precio y guarda todo en SQLite.
-#
-# DIFERENCIA CON routes/scraping.py:
-#   routes/scraping.py es el botón (recibe el click del usuario).
-#   Este archivo es el motor (hace todo el trabajo real).
-#
-# SCRAPERS INCLUIDOS:
-#   1. scrape_carymar  → www.carymar.co   (Shopify, colecciones paginadas)
-#   2. scrape_saraisa  → saraisa.co       (WooCommerce, categorías)
-#   3. scrape_ohmama   → www.ohmama.com.co (Shopify, colecciones)
-#
-# CÓMO FUNCIONA EL FLUJO:
-#   run_all_scrapers()
-#     → llama a cada scraper individual
-#     → recibe lista de productos como dicts
-#     → llama a _normalizar_precio() para limpiar "$55.000" → 55000.0
-#     → llama a _guardar_producto() para cada producto
-#       → si ya existe: detecta cambio de precio y registra en price_history
-#       → si es nuevo: lo inserta en products
-#     → hace commit final a SQLite
-# ==============================================================================
+# app/services/scraping_service.py
 
-import time
 import requests
+import pandas as pd
+import numpy as np
+import re
+import unicodedata
+import time
+
 from bs4 import BeautifulSoup
-from datetime import datetime
-from sqlalchemy.orm import Session
+from pathlib import Path
+from collections import Counter
 
-from models.product import Product
-from models.price_history import PriceHistory
+from sklearn.preprocessing import MultiLabelBinarizer
+from sklearn.model_selection import (
+    train_test_split,
+    StratifiedKFold,
+    KFold,
+    cross_val_score
+)
+from sklearn.pipeline import Pipeline
+from sklearn.linear_model import LogisticRegression
+from sklearn.ensemble import RandomForestRegressor
+from sklearn.compose import ColumnTransformer, TransformedTargetRegressor
+from sklearn.preprocessing import OneHotEncoder
+from sklearn.feature_extraction.text import TfidfVectorizer
+from sklearn.metrics import (
+    classification_report,
+    mean_absolute_error,
+    mean_squared_error,
+    r2_score,
+    make_scorer
+)
 
-# ─── Configuración global ─────────────────────────────────────
-HEADERS = {"User-Agent": "Mozilla/5.0"}
-DELAY   = 1  # segundos entre peticiones para no sobrecargar los sitios
+HEADERS = {
+    "User-Agent": "Mozilla/5.0"
+}
 
+# =========================================================
+# SCRAPING CARYMAR
+# =========================================================
 
-# ==============================================================================
-# UTILIDADES
-# ==============================================================================
+def scrape_carymar():
 
-def _normalizar_precio(precio_str: str) -> float | None:
-    """
-    Convierte strings de precio colombiano a float.
-
-    Ejemplos:
-      "$55.000"   → 55000.0
-      "$106,250"  → 106250.0
-      "$1.200.000"→ 1200000.0
-      "N/A"       → None
-
-    El notebook del equipo extrae los precios como strings con símbolo $,
-    puntos de miles y comas decimales. Esta función los normaliza todos.
-    """
-    if not precio_str or precio_str == "N/A":
-        return None
-    try:
-        limpio = precio_str.replace("$", "").replace("\xa0", "").strip()
-        # Formato colombiano con punto como separador de miles: $55.000
-        if "." in limpio and "," not in limpio:
-            limpio = limpio.replace(".", "")
-        # Formato con coma como separador de miles: $106,250
-        elif "," in limpio and "." not in limpio:
-            limpio = limpio.replace(",", "")
-        # Formato mixto: $1.200,50
-        elif "." in limpio and "," in limpio:
-            limpio = limpio.replace(".", "").replace(",", ".")
-        return float(limpio)
-    except (ValueError, AttributeError):
-        return None
-
-
-# ==============================================================================
-# SCRAPER 1: CARYMAR (www.carymar.co)
-# Basado directamente en el notebook del equipo.
-# Shopify: navega colecciones paginadas y entra a cada producto.
-# ==============================================================================
-
-# ==============================================================================
-# SCRAPER 3: OHMAMA (www.ohmama.com.co)
-# ==============================================================================
-def scrape_ohmama() -> list[dict]:
-
-    base_url = "https://www.ohmama.com.co"
+    base_url = "https://www.carymar.co"
     productos = []
 
-    try:
-        resp = requests.get(base_url, headers=HEADERS, timeout=15)
-        soup = BeautifulSoup(resp.text, "html.parser")
+    response = requests.get(base_url, headers=HEADERS)
+    soup = BeautifulSoup(response.text, "html.parser")
 
-        categorias = []
+    colecciones = []
 
-        # Descubrir categorías
-        links_categorias = soup.select("ul.list-menu li a")
+    for link in soup.select("a[href*='/collections/']"):
+        url = link.get("href")
 
-        for link in links_categorias:
-            url = link.get("href")
+        if url and "/collections/" in url and "all" not in url:
 
-            if url and "/collections/" in url:
-                url_completa = (
-                    base_url + url
-                    if url.startswith("/")
-                    else url
+            url = base_url + url if url.startswith("/") else url
+
+            if url not in colecciones:
+                colecciones.append(url)
+
+    print(f"[CARYMAR] Colecciones encontradas: {len(colecciones)}")
+
+    for coleccion_url in colecciones:
+
+        page = 1
+
+        while True:
+
+            url = coleccion_url if page == 1 else f"{coleccion_url}?page={page}"
+
+            response = requests.get(url, headers=HEADERS)
+            soup = BeautifulSoup(response.text, "html.parser")
+
+            items = soup.select("div.product-card")
+
+            if not items:
+                break
+
+            for item in items:
+
+                nombre_tag = item.select_one("div.grid-view-item__title")
+                nombre = nombre_tag.get_text(strip=True) if nombre_tag else "N/A"
+
+                precio_tag = (
+                    item.select_one("span.price-item--sale")
+                    or item.select_one("span.price-item--regular")
                 )
 
-                if url_completa not in categorias:
-                    categorias.append(url_completa)
+                precio = precio_tag.get_text(strip=True) if precio_tag else "N/A"
 
-        print(f"[OhMama] {len(categorias)} colecciones encontradas.")
+                enlace_tag = item.select_one("a")
 
-        # Recorrer categorías
-        for cat_url in categorias:
-
-            try:
-                print(f"[OhMama] Extrayendo: {cat_url}")
-
-                resp = requests.get(
-                    cat_url,
-                    headers=HEADERS,
-                    timeout=15
+                enlace = (
+                    base_url + enlace_tag["href"]
+                    if enlace_tag else None
                 )
 
-                soup = BeautifulSoup(resp.text, "html.parser")
+                colores = []
+                descripcion = "N/A"
 
-                # Buscar links reales de productos
-                items = soup.select("a.full-unstyled-link")
-
-                productos_vistos = set()
-
-                for item in items:
-
-                    href = item.get("href")
-
-                    if not href:
-                        continue
-
-                    # Evitar duplicados
-                    if href in productos_vistos:
-                        continue
-
-                    productos_vistos.add(href)
-
-                    # Construir URL completa
-                    url_producto = (
-                        base_url + href
-                        if href.startswith("/")
-                        else href
-                    )
+                if enlace:
 
                     try:
-                        # Entrar al producto individual
-                        resp_p = requests.get(
-                            url_producto,
-                            headers=HEADERS,
-                            timeout=15
+
+                        resp_prod = requests.get(enlace, headers=HEADERS)
+                        soup_prod = BeautifulSoup(resp_prod.text, "html.parser")
+
+                        color_tags = (
+                            soup_prod.select("input[name='Color'][type='radio'] + label")
+                            or soup_prod.select("option")
                         )
 
-                        soup_p = BeautifulSoup(
-                            resp_p.text,
-                            "html.parser"
+                        colores = [
+                            c.get_text(strip=True)
+                            for c in color_tags
+                            if c.get_text(strip=True)
+                        ]
+
+                        desc_tag = soup_prod.select_one(
+                            "div.product-single__description"
                         )
 
-                        # Nombre
-                        nombre_tag = soup_p.select_one(
-                            "div.product__title h1"
-                        )
-
-                        nombre = (
-                            nombre_tag.get_text(strip=True)
-                            if nombre_tag
-                            else None
-                        )
-
-                        if not nombre:
-                            continue
-
-                        # Precio
-                        precio_tag = (
-                            soup_p.select_one("span.price-item--sale")
-                            or soup_p.select_one("span.price-item--regular")
-                        )
-
-                        precio_raw = (
-                            precio_tag.get_text(strip=True)
-                            if precio_tag
-                            else None
-                        )
-
-                        precio = _normalizar_precio(precio_raw)
-
-                        if precio is None:
-                            continue
-
-                        categoria = (
-                            cat_url.rstrip("/")
-                            .split("/")[-1]
-                        )
-
-                        productos.append({
-                            "name": nombre,
-                            "price": precio,
-                            "category": categoria,
-                            "competitor": "ohmama",
-                            "product_url": url_producto,
-                        })
-
-                        time.sleep(DELAY)
+                        if desc_tag:
+                            descripcion = desc_tag.get_text(strip=True)
 
                     except Exception as e:
-                        print(f"[OhMama] Error producto: {e}")
+                        print(f"[CARYMAR] Error producto: {e}")
 
-            except Exception as e:
-                print(f"[OhMama] Error categoría {cat_url}: {e}")
+                productos.append({
+                    "Categoria": coleccion_url.split("/")[-1],
+                    "Producto": nombre,
+                    "Precio": precio,
+                    "Colores": ", ".join(colores) if colores else "N/A",
+                    "Descripcion": descripcion,
+                    "URL": enlace,
+                    "Tienda": "Carymar"
+                })
 
-    except Exception as e:
-        print(f"[OhMama] Error general: {e}")
+                time.sleep(1)
 
-    print(f"[OhMama] {len(productos)} productos extraídos.")
+            page += 1
 
-    return productos
+    return pd.DataFrame(productos)
 
-# ==============================================================================
-# SCRAPER 2: SARAISA (saraisa.co)
-# Basado directamente en el notebook del equipo.
-# WooCommerce: navega categorías y extrae con selectores específicos.
-# ==============================================================================
+# =========================================================
+# SCRAPING SARAISA
+# =========================================================
 
-def scrape_saraisa() -> list[dict]:
-    """
-    Extrae productos de saraisa.co.
-    Lógica replicada del notebook: descubre categorías desde /tienda/,
-    luego recorre cada una extrayendo nombre, precio, colores, tallas.
+def scrape_saraisa():
 
-    Retorna lista de dicts con claves:
-      name, price, category, competitor, product_url
-    """
     base_url = "https://saraisa.co"
+
+    categorias = []
     productos = []
 
-    try:
-        # Paso 1: descubrir categorías desde /tienda/
-        resp = requests.get(f"{base_url}/tienda/", headers=HEADERS, timeout=15)
+    resp = requests.get(f"{base_url}/tienda/", headers=HEADERS)
+    soup = BeautifulSoup(resp.text, "html.parser")
+
+    links = soup.select('a[href*="/categoria-producto/"]')
+
+    for link in links:
+
+        url = link["href"]
+
+        if url not in categorias:
+            categorias.append(url)
+
+    print(f"[SARAISA] Categorías encontradas: {len(categorias)}")
+
+    for cat_url in categorias:
+
+        resp = requests.get(cat_url, headers=HEADERS)
         soup = BeautifulSoup(resp.text, "html.parser")
 
-        categorias = []
-        for link in soup.select('a[href*="/categoria-producto/"]'):
-            url = link["href"]
-            if url not in categorias:
-                categorias.append(url)
+        items = soup.select("div.nm-shop-loop-title-price")
 
-        print(f"[Saraisa] {len(categorias)} categorías encontradas.")
+        for item in items:
 
-        # Paso 2: recorrer cada categoría
-        for cat_url in categorias:
-            try:
-                resp = requests.get(cat_url, headers=HEADERS, timeout=15)
-                soup = BeautifulSoup(resp.text, "html.parser")
+            nombre_tag = item.select_one(
+                "h3.woocommerce-loop-product__title a"
+            )
 
-                items = soup.select("div.nm-shop-loop-title-price")
+            nombre = (
+                nombre_tag.get_text(strip=True)
+                if nombre_tag else "N/A"
+            )
 
-                for item in items:
-                    nombre_tag = item.select_one("h3.woocommerce-loop-product__title a")
-                    nombre     = nombre_tag.get_text(strip=True) if nombre_tag else None
-                    if not nombre:
-                        continue
+            url_producto = (
+                nombre_tag["href"]
+                if nombre_tag else "N/A"
+            )
 
-                    url_producto = nombre_tag["href"] if nombre_tag else None
+            precio_tag = (
+                item.select_one(
+                    "span.price ins .woocommerce-Price-amount"
+                )
+                or item.select_one(
+                    "span.price .woocommerce-Price-amount"
+                )
+            )
 
-                    precio_tag = (
-                        item.select_one("span.price ins .woocommerce-Price-amount")
-                        or item.select_one("span.price .woocommerce-Price-amount")
-                    )
-                    precio_raw = precio_tag.get_text(strip=True) if precio_tag else None
-                    precio     = _normalizar_precio(precio_raw)
-                    if precio is None:
-                        continue
+            precio = (
+                precio_tag.get_text(strip=True)
+                if precio_tag else "N/A"
+            )
 
-                    categoria = cat_url.rstrip("/").split("/")[-1]
+            descripcion = ""
+            colores = ""
+            estampados = ""
+            tallas = ""
 
-                    productos.append({
-                        "name":        nombre,
-                        "price":       precio,
-                        "category":    categoria,
-                        "competitor":  "saraisa",
-                        "product_url": url_producto,
-                    })
+            if url_producto != "N/A":
 
-                    time.sleep(DELAY)
+                resp_p = requests.get(url_producto, headers=HEADERS)
+                soup_p = BeautifulSoup(resp_p.text, "html.parser")
 
-            except Exception as e:
-                print(f"[Saraisa] Error en {cat_url}: {e}")
-
-    except Exception as e:
-        print(f"[Saraisa] Error general: {e}")
-
-    print(f"[Saraisa] {len(productos)} productos extraídos.")
-    return productos
-
-
-# ==============================================================================
-# SCRAPER 3: OHMAMA (www.ohmama.com.co)
-# Basado en el notebook del equipo.
-# Shopify: navega colecciones desde el menú principal.
-# ==============================================================================
-
-def scrape_ohmama() -> list[dict]:
-    """
-    Extrae productos de www.ohmama.com.co.
-    Shopify: descubre colecciones desde el menú de navegación,
-    luego las recorre página por página.
-
-    Retorna lista de dicts con claves:
-      name, price, category, competitor, product_url
-    """
-
-    base_url = "https://www.ohmama.com.co"
-    productos = []
-
-    try:
-        # Paso 1: descubrir colecciones desde el menú
-        resp = requests.get(base_url, headers=HEADERS, timeout=15)
-        soup = BeautifulSoup(resp.text, "html.parser")
-
-        categorias = []
-
-        for link in soup.select("ul.list-menu li a"):
-            url = link.get("href")
-
-            if url and "/collections/" in url:
-                url_completa = (
-                    base_url + url if url.startswith("/") else url
+                desc_tag = soup_p.select_one(
+                    "div.woocommerce-product-details__short-description"
                 )
 
-                if url_completa not in categorias:
-                    categorias.append(url_completa)
+                if desc_tag:
+                    descripcion = desc_tag.get_text(strip=True)
 
-        print(f"[OhMama] {len(categorias)} colecciones encontradas.")
+                colores = ", ".join([
+                    o.get("value")
+                    for o in soup_p.select("#pa_colores option")
+                    if o.get("value")
+                ])
 
-        # Paso 2: recorrer categorías
-        for cat_url in categorias:
+                estampados = ", ".join([
+                    o.get("value")
+                    for o in soup_p.select("#pa_estampado option")
+                    if o.get("value")
+                ])
 
-            page = 1
+                tallas = ", ".join([
+                    o.get("value")
+                    for o in soup_p.select("#pa_tallas option")
+                    if o.get("value")
+                ])
 
-            while True:
+                time.sleep(1)
 
-                url = cat_url if page == 1 else f"{cat_url}?page={page}"
-
-                try:
-                    resp = requests.get(url, headers=HEADERS, timeout=15)
-                    soup = BeautifulSoup(resp.text, "html.parser")
-
-                    items = soup.select("div.product-card, li.grid__item")
-
-                    if not items:
-                        break
-
-                    for item in items:
-
-                        # ─── Nombre ─────────────────────────────
-                        nombre_link = (
-                            item.select_one("div.card__heading a")
-                            or item.select_one("h3.card__heading a")
-                            or item.select_one("a.full-unstyled-link")
-                            or item.select_one("a")
-                        )
-
-                        nombre = (
-                            nombre_link.get_text(strip=True)
-                            if nombre_link else None
-                        )
-
-                        if not nombre:
-                            continue
-
-                        # ─── URL ────────────────────────────────
-                        enlace = None
-
-                        if nombre_link:
-                            href = nombre_link.get("href")
-
-                            if href:
-                                enlace = (
-                                    base_url + href
-                                    if href.startswith("/")
-                                    else href
-                                )
-
-                        # ─── Precio ─────────────────────────────
-                        precio_tag = (
-                            item.select_one("span.price-item--sale")
-                            or item.select_one("span.price-item--regular")
-                            or item.select_one(".price__regular .price-item")
-                        )
-
-                        precio_raw = (
-                            precio_tag.get_text(strip=True)
-                            if precio_tag else None
-                        )
-
-                        precio = _normalizar_precio(precio_raw)
-
-                        if precio is None:
-                            continue
-
-                        # ─── Categoría ──────────────────────────
-                        categoria = cat_url.rstrip("/").split("/")[-1]
-
-                        productos.append({
-                            "name": nombre,
-                            "price": precio,
-                            "category": categoria,
-                            "competitor": "ohmama",
-                            "product_url": enlace,
-                        })
-
-                        time.sleep(DELAY)
-
-                    page += 1
-
-                except Exception as e:
-                    print(f"[OhMama] Error en {url}: {e}")
-                    break
-
-    except Exception as e:
-        print(f"[OhMama] Error general: {e}")
-
-    print(f"[OhMama] {len(productos)} productos extraídos.")
-
-    return productos
-
-# ==============================================================================
-# ORQUESTADOR PRINCIPAL
-# Coordinado por OpenClaw. Llama a los tres scrapers, consolida resultados
-# y persiste todo en SQLite con detección de duplicados y cambios de precio.
-# ==============================================================================
-
-def run_all_scrapers(db: Session) -> dict:
-    """
-    Ejecuta los tres scrapers en secuencia y guarda los resultados en SQLite.
-
-    Flujo por cada producto:
-      1. Verifica si ya existe en la base de datos (mismo nombre + competidor).
-      2. Si existe y el precio cambió: registra el cambio en price_history.
-      3. Si es nuevo: lo inserta como nuevo registro en products.
-      4. Si existe y el precio es igual: lo ignora (sin duplicados).
-
-    Retorna un resumen de ejecución con totales y errores por competidor.
-    """
-    resumen = {
-        "inicio":       datetime.utcnow().isoformat(),
-        "competidores": [],
-        "total_procesados": 0,
-        "total_nuevos":     0,
-        "total_actualizados": 0,
-        "errores":      []
-    }
-
-    scrapers = [
-        ("carymar", scrape_carymar),
-        ("saraisa", scrape_saraisa),
-        ("ohmama",  scrape_ohmama),
-    ]
-
-    for nombre_competidor, funcion_scraper in scrapers:
-        print(f"\n{'='*50}")
-        print(f"Iniciando scraping: {nombre_competidor.upper()}")
-        print(f"{'='*50}")
-
-        try:
-            productos_raw  = funcion_scraper()
-            nuevos, actualizados = _persistir_productos(db, productos_raw)
-
-            resumen["competidores"].append({
-                "competidor":   nombre_competidor,
-                "extraidos":    len(productos_raw),
-                "nuevos":       nuevos,
-                "actualizados": actualizados,
-                "estado":       "ok"
+            productos.append({
+                "Categoria": cat_url.split("/")[-2],
+                "Producto": nombre,
+                "Precio": precio,
+                "Descripcion": descripcion,
+                "Colores": colores,
+                "Estampados": estampados,
+                "Tallas": tallas,
+                "URL": url_producto,
+                "Tienda": "Saraisa"
             })
-            resumen["total_procesados"]  += len(productos_raw)
-            resumen["total_nuevos"]      += nuevos
-            resumen["total_actualizados"] += actualizados
 
-            print(f"[{nombre_competidor.upper()}] OK: {nuevos} nuevos, {actualizados} actualizados.")
+    return pd.DataFrame(productos)
 
-        except Exception as e:
-            msg = f"Error en {nombre_competidor}: {str(e)}"
-            resumen["errores"].append(msg)
-            resumen["competidores"].append({
-                "competidor": nombre_competidor,
-                "estado":     "error",
-                "detalle":    str(e)
-            })
-            print(f"[{nombre_competidor.upper()}] ERROR: {e}")
+# =========================================================
+# UTILIDADES LIMPIEZA
+# =========================================================
 
-    resumen["fin"] = datetime.utcnow().isoformat()
-    print(f"\nScraping finalizado. Total procesados: {resumen['total_procesados']}")
-    return resumen
+def parse_precio(x):
+
+    if pd.isna(x):
+        return np.nan
+
+    s = str(x)
+
+    s = s.replace("$", "").replace(",", "").strip()
+
+    if s.endswith(".00"):
+        s = s[:-3]
+
+    s = re.sub(r"[^\d]", "", s)
+
+    return float(s) if s else np.nan
 
 
-def _persistir_productos(db: Session, productos: list[dict]) -> tuple[int, int]:
-    """
-    Guarda la lista de productos en SQLite.
+def norm_text(s):
 
-    - Detecta duplicados por nombre + competidor.
-    - Si el precio cambió, registra el cambio en price_history.
-    - Si es nuevo, lo inserta.
+    if pd.isna(s):
+        return s
 
-    Retorna (nuevos, actualizados) como contadores.
-    """
-    nuevos      = 0
-    actualizados = 0
+    s = str(s).lower()
 
-    for item in productos:
-        nombre      = item.get("name", "").strip()
-        competidor  = item.get("competitor", "").strip()
-        precio      = item.get("price")
+    s = unicodedata.normalize("NFKD", s)
 
-        if not nombre or not competidor or precio is None:
-            continue
+    s = "".join(
+        ch for ch in s
+        if not unicodedata.category(ch).startswith("M")
+    )
 
-        existente = (
-            db.query(Product)
-            .filter(
-                Product.name       == nombre,
-                Product.competitor == competidor
+    s = s.replace("+", " ")
+    s = s.replace("_", " ")
+    s = s.replace("-", " ")
+
+    s = re.sub(r"\s+", " ", s).strip()
+
+    return s
+
+# =========================================================
+# CONSOLIDACIÓN
+# =========================================================
+
+def consolidar_datasets(*dfs):
+
+    df_final = pd.concat(dfs, ignore_index=True)
+
+    df_final["Precio_num"] = df_final["Precio"].apply(parse_precio)
+
+    return df_final
+
+# =========================================================
+# NLP / FEATURES
+# =========================================================
+
+def construir_texto(df):
+
+    df["texto"] = (
+        df["Producto"].fillna("")
+        + " "
+        + df["Descripcion"].fillna("")
+    )
+
+    return df
+
+# =========================================================
+# MODELO NLP CATEGORÍAS
+# =========================================================
+
+def entrenar_modelo_categoria(df):
+
+    X = df["texto"]
+    y = df["Categoria_norm"]
+
+    X_train, X_test, y_train, y_test = train_test_split(
+        X,
+        y,
+        stratify=y,
+        test_size=0.1,
+        random_state=42
+    )
+
+    pipe = Pipeline([
+        (
+            "tfidf",
+            TfidfVectorizer(
+                max_features=8000,
+                ngram_range=(1, 2)
             )
-            .first()
+        ),
+        (
+            "clf",
+            LogisticRegression(
+                max_iter=4000,
+                class_weight="balanced",
+                n_jobs=-1
+            )
         )
+    ])
 
-        if existente:
-            # Comparar precios con tolerancia de 1 peso para evitar
-            # falsos positivos por redondeo de float
-            if abs(existente.price - precio) > 1:
-                historial = PriceHistory(
-                    product_id  = existente.id,
-                    old_price   = existente.price,
-                    new_price   = precio,
-                    detected_at = datetime.utcnow()
+    pipe.fit(X_train, y_train)
+
+    pred = pipe.predict(X_test)
+
+    print(classification_report(y_test, pred))
+
+    return pipe
+
+# =========================================================
+# MODELO REGRESIÓN PRECIO
+# =========================================================
+
+def entrenar_modelo_precio(df):
+
+    X = df[["texto", "Categoria_norm"]]
+    y = df["Precio_num"]
+
+    pre = ColumnTransformer([
+        (
+            "tfidf",
+            TfidfVectorizer(
+                max_features=8000,
+                ngram_range=(1, 2)
+            ),
+            "texto"
+        ),
+        (
+            "cat",
+            OneHotEncoder(handle_unknown="ignore"),
+            ["Categoria_norm"]
+        )
+    ])
+
+    model = TransformedTargetRegressor(
+
+        regressor=Pipeline([
+            ("pre", pre),
+            (
+                "rf",
+                RandomForestRegressor(
+                    n_estimators=400,
+                    random_state=42,
+                    n_jobs=-1
                 )
-                db.add(historial)
-                existente.price      = precio
-                existente.scraped_at = datetime.utcnow()
-                actualizados += 1
-        else:
-            nuevo = Product(
-                name        = nombre,
-                category    = item.get("category", "sin categoria"),
-                price       = precio,
-                competitor  = competidor,
-                product_url = item.get("product_url"),
-                scraped_at  = datetime.utcnow()
             )
-            db.add(nuevo)
-            nuevos += 1
+        ]),
 
-    db.commit()
-    return nuevos, actualizados
+        func=np.log1p,
+        inverse_func=np.expm1
+    )
+
+    X_train, X_test, y_train, y_test = train_test_split(
+        X,
+        y,
+        test_size=0.2,
+        random_state=42
+    )
+
+    model.fit(X_train, y_train)
+
+    pred = model.predict(X_test)
+
+    mae = mean_absolute_error(y_test, pred)
+    rmse = np.sqrt(mean_squared_error(y_test, pred))
+    r2 = r2_score(y_test, pred)
+
+    print(f"MAE: {mae:,.0f}")
+    print(f"RMSE: {rmse:,.0f}")
+    print(f"R2: {r2:.3f}")
+
+    return model
+
+# =========================================================
+# EXPORTACIÓN
+# =========================================================
+
+def exportar_csv(df, nombre):
+
+    Path("salidas").mkdir(exist_ok=True)
+
+    ruta = f"salidas/{nombre}.csv"
+
+    df.to_csv(ruta, index=False, encoding="utf-8-sig")
+
+    print(f"CSV guardado: {ruta}")
