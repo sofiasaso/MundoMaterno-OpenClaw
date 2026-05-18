@@ -60,3 +60,16 @@ logs/
 data/exports/
 *.csv
 *.xlsx
+
+# Variables sensibles
+.env
+
+# Dependencias React
+frontend/node_modules/
+
+# Base de datos SQLite
+backend/data/
+
+# Cache Python
+__pycache__/
+*.pyc
