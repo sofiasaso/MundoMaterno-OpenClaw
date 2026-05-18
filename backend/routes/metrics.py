@@ -1,3 +1,9 @@
+# ==============================================================================
+# ARCHIVO: /backend/routes/metrics.py
+# FUNCIÓN:
+# Genera métricas generales para el dashboard de Mundo Materno.
+# ==============================================================================
+
 from fastapi import APIRouter, Depends
 from sqlalchemy.orm import Session
 from sqlalchemy import func
@@ -20,65 +26,79 @@ def dashboard_metrics(db: Session = Depends(get_db)):
         db.query(func.avg(Product.price)).scalar() or 0
     )
 
+    # ==============================
+    # MÉTRICAS POR COMPETIDOR
+    # ==============================
+
     competidores = (
         db.query(
             Product.competitor,
             func.count(Product.id).label("total_productos"),
             func.avg(Product.price).label("precio_promedio"),
             func.min(Product.price).label("precio_minimo"),
-            func.max(Product.price).label("precio_maximo"),
+            func.max(Product.price).label("precio_maximo")
         )
         .group_by(Product.competitor)
         .all()
     )
 
+    por_competidor = []
+
+    for c in competidores:
+        por_competidor.append({
+            "competitor": c.competitor,
+            "total_productos": c.total_productos,
+            "precio_promedio": round(c.precio_promedio, 2),
+            "precio_minimo": c.precio_minimo,
+            "precio_maximo": c.precio_maximo
+        })
+
+    # ==============================
+    # COMPETIDOR MÁS BARATO
+    # ==============================
+
+    competidor_barato = None
+
+    if por_competidor:
+        competidor_barato = min(
+            por_competidor,
+            key=lambda x: x["precio_promedio"]
+        )
+
+    # ==============================
+    # MÉTRICAS POR CATEGORÍA
+    # ==============================
+
     categorias = (
         db.query(
             Product.category,
             func.count(Product.id).label("total_productos"),
-            func.avg(Product.price).label("precio_promedio"),
+            func.avg(Product.price).label("precio_promedio")
         )
         .group_by(Product.category)
+        .order_by(func.avg(Product.price).desc())
         .all()
     )
 
-    competidor_barato = min(
-        competidores,
-        key=lambda x: x.precio_promedio
-    ) if competidores else None
+    por_categoria = []
+
+    for cat in categorias:
+        por_categoria.append({
+            "category": cat.category,
+            "total_productos": cat.total_productos,
+            "precio_promedio": round(cat.precio_promedio, 2)
+        })
 
     return {
         "resumen_general": {
             "total_productos": total_productos,
             "total_cambios_detectados": total_cambios,
-            "precio_promedio_global": round(promedio_global, 2),
+            "precio_promedio_global": round(promedio_global, 2)
         },
 
-        "competidor_mas_barato": {
-            "competitor": competidor_barato.competitor,
-            "total_productos": competidor_barato.total_productos,
-            "precio_promedio": round(competidor_barato.precio_promedio, 2),
-            "precio_minimo": competidor_barato.precio_minimo,
-            "precio_maximo": competidor_barato.precio_maximo,
-        } if competidor_barato else None,
+        "competidor_mas_barato": competidor_barato,
 
-        "por_competidor": [
-            {
-                "competitor": c.competitor,
-                "total_productos": c.total_productos,
-                "precio_promedio": round(c.precio_promedio, 2),
-                "precio_minimo": c.precio_minimo,
-                "precio_maximo": c.precio_maximo,
-            }
-            for c in competidores
-        ],
+        "por_competidor": por_competidor,
 
-        "por_categoria": [
-            {
-                "category": cat.category,
-                "total_productos": cat.total_productos,
-                "precio_promedio": round(cat.precio_promedio, 2),
-            }
-            for cat in categorias
-        ]
+        "por_categoria": por_categoria
     }
