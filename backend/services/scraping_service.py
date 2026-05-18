@@ -259,6 +259,7 @@ def scrape_ohmama() -> list[dict]:
     Retorna lista de dicts con claves:
       name, price, category, competitor, product_url
     """
+
     base_url = "https://www.ohmama.com.co"
     productos = []
 
@@ -268,76 +269,94 @@ def scrape_ohmama() -> list[dict]:
         soup = BeautifulSoup(resp.text, "html.parser")
 
         categorias = []
+
         for link in soup.select("ul.list-menu li a"):
             url = link.get("href")
+
             if url and "/collections/" in url:
-                url_completa = base_url + url if url.startswith("/") else url
+                url_completa = (
+                    base_url + url if url.startswith("/") else url
+                )
+
                 if url_completa not in categorias:
                     categorias.append(url_completa)
 
         print(f"[OhMama] {len(categorias)} colecciones encontradas.")
 
-        # Paso 2: recorrer cada colección
+        # Paso 2: recorrer categorías
         for cat_url in categorias:
+
             page = 1
+
             while True:
+
                 url = cat_url if page == 1 else f"{cat_url}?page={page}"
 
                 try:
                     resp = requests.get(url, headers=HEADERS, timeout=15)
                     soup = BeautifulSoup(resp.text, "html.parser")
 
-                    # OhMama también usa Shopify, selectores similares a Carymar
                     items = soup.select("div.product-card, li.grid__item")
+
                     if not items:
                         break
 
-                    for item in items: 
+                    for item in items:
 
                         # ─── Nombre ─────────────────────────────
-                        nombre_tag = (
+                        nombre_link = (
                             item.select_one("div.card__heading a")
-                            or item.select_one("a.full-unstyled-link")
                             or item.select_one("h3.card__heading a")
+                            or item.select_one("a.full-unstyled-link")
+                            or item.select_one("a")
                         )
-                        
-                        nombre = nombre_tag.get_text(strip=True) if nombre_tag else None
-                        
+
+                        nombre = (
+                            nombre_link.get_text(strip=True)
+                            if nombre_link else None
+                        )
+
                         if not nombre:
                             continue
-                        
+
+                        # ─── URL ────────────────────────────────
+                        enlace = None
+
+                        if nombre_link:
+                            href = nombre_link.get("href")
+
+                            if href:
+                                enlace = (
+                                    base_url + href
+                                    if href.startswith("/")
+                                    else href
+                                )
+
                         # ─── Precio ─────────────────────────────
                         precio_tag = (
                             item.select_one("span.price-item--sale")
                             or item.select_one("span.price-item--regular")
                             or item.select_one(".price__regular .price-item")
                         )
-                        
-                        precio_raw = precio_tag.get_text(strip=True) if precio_tag else None
+
+                        precio_raw = (
+                            precio_tag.get_text(strip=True)
+                            if precio_tag else None
+                        )
+
                         precio = _normalizar_precio(precio_raw)
-                        
+
                         if precio is None:
                             continue
-                        
-                        # ─── URL del producto ───────────────────
-                        href = nombre_tag.get("href") if nombre_tag else None
-                        
-                        if href:
-                            if href.startswith("/"):
-                                enlace = base_url + href
-                            else:
-                                enlace = href
-                        else:
-                            enlace = None
 
-                        
-                        categoria  = cat_url.rstrip("/").split("/")[-1]
+                        # ─── Categoría ──────────────────────────
+                        categoria = cat_url.rstrip("/").split("/")[-1]
 
                         productos.append({
-                            "name":        nombre,
-                            "price":       precio,
-                            "category":    categoria,
-                            "competitor":  "ohmama",
+                            "name": nombre,
+                            "price": precio,
+                            "category": categoria,
+                            "competitor": "ohmama",
                             "product_url": enlace,
                         })
 
@@ -353,8 +372,8 @@ def scrape_ohmama() -> list[dict]:
         print(f"[OhMama] Error general: {e}")
 
     print(f"[OhMama] {len(productos)} productos extraídos.")
-    return productos
 
+    return productos
 
 # ==============================================================================
 # ORQUESTADOR PRINCIPAL
