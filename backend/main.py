@@ -18,6 +18,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from routes import products, metrics, alerts, scraping
+from routes.metrics import router as metrics_router
 from database.init_db import init_db
 
 # ─── Inicialización de la app ─────────────────────────────────
@@ -51,8 +52,8 @@ app.add_middleware(
 # ─── Routers ──────────────────────────────────────────────────
 # Cada router agrupa los endpoints de una responsabilidad específica.
 # El prefijo define la URL base de cada grupo.
-app.include_router(products.router, prefix="/products", tags=["Productos"])
-app.include_router(metrics.router,  prefix="/metrics",  tags=["Métricas"])
+app.include_router(products.router, prefix="/products", tags=["Products"])
+app.include_router(metrics_router, prefix="/metrics", tags=["Metrics"])
 app.include_router(alerts.router,   prefix="/alerts",   tags=["Alertas"])
 app.include_router(scraping.router, prefix="/scraping", tags=["Scraping"])
 
