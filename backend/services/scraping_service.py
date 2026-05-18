@@ -82,89 +82,148 @@ def _normalizar_precio(precio_str: str) -> float | None:
 # Shopify: navega colecciones paginadas y entra a cada producto.
 # ==============================================================================
 
-def scrape_carymar() -> list[dict]:
-    """
-    Extrae productos de www.carymar.co.
-    Lógica replicada del notebook: descubre colecciones desde la home,
-    las recorre página por página y extrae nombre, precio, colores y URL.
+# ==============================================================================
+# SCRAPER 3: OHMAMA (www.ohmama.com.co)
+# ==============================================================================
+def scrape_ohmama() -> list[dict]:
 
-    Retorna lista de dicts con claves:
-      name, price, category, competitor, product_url
-    """
-    base_url = "https://www.carymar.co"
+    base_url = "https://www.ohmama.com.co"
     productos = []
 
     try:
-        # Paso 1: descubrir colecciones desde la home
         resp = requests.get(base_url, headers=HEADERS, timeout=15)
         soup = BeautifulSoup(resp.text, "html.parser")
 
-        colecciones = []
-        for link in soup.select("a[href*='/collections/']"):
+        categorias = []
+
+        # Descubrir categorías
+        links_categorias = soup.select("ul.list-menu li a")
+
+        for link in links_categorias:
             url = link.get("href")
-            if url and "/collections/" in url and "all" not in url:
-                url_completa = base_url + url if url.startswith("/") else url
-                if url_completa not in colecciones:
-                    colecciones.append(url_completa)
 
-        print(f"[Carymar] {len(colecciones)} colecciones encontradas.")
+            if url and "/collections/" in url:
+                url_completa = (
+                    base_url + url
+                    if url.startswith("/")
+                    else url
+                )
 
-        # Paso 2: recorrer cada colección página por página
-        for coleccion_url in colecciones:
-            page = 1
-            while True:
-                url = coleccion_url if page == 1 else f"{coleccion_url}?page={page}"
+                if url_completa not in categorias:
+                    categorias.append(url_completa)
 
-                try:
-                    resp = requests.get(url, headers=HEADERS, timeout=15)
-                    soup = BeautifulSoup(resp.text, "html.parser")
+        print(f"[OhMama] {len(categorias)} colecciones encontradas.")
 
-                    items = soup.select("div.product-card")
-                    if not items:
-                        break  # No hay más páginas
+        # Recorrer categorías
+        for cat_url in categorias:
 
-                    for item in items:
-                        nombre_tag = item.select_one("div.grid-view-item__title")
-                        nombre     = nombre_tag.get_text(strip=True) if nombre_tag else None
+            try:
+                print(f"[OhMama] Extrayendo: {cat_url}")
+
+                resp = requests.get(
+                    cat_url,
+                    headers=HEADERS,
+                    timeout=15
+                )
+
+                soup = BeautifulSoup(resp.text, "html.parser")
+
+                # Buscar links reales de productos
+                items = soup.select("a.full-unstyled-link")
+
+                productos_vistos = set()
+
+                for item in items:
+
+                    href = item.get("href")
+
+                    if not href:
+                        continue
+
+                    # Evitar duplicados
+                    if href in productos_vistos:
+                        continue
+
+                    productos_vistos.add(href)
+
+                    # Construir URL completa
+                    url_producto = (
+                        base_url + href
+                        if href.startswith("/")
+                        else href
+                    )
+
+                    try:
+                        # Entrar al producto individual
+                        resp_p = requests.get(
+                            url_producto,
+                            headers=HEADERS,
+                            timeout=15
+                        )
+
+                        soup_p = BeautifulSoup(
+                            resp_p.text,
+                            "html.parser"
+                        )
+
+                        # Nombre
+                        nombre_tag = soup_p.select_one(
+                            "div.product__title h1"
+                        )
+
+                        nombre = (
+                            nombre_tag.get_text(strip=True)
+                            if nombre_tag
+                            else None
+                        )
+
                         if not nombre:
                             continue
 
+                        # Precio
                         precio_tag = (
-                            item.select_one("span.price-item--sale")
-                            or item.select_one("span.price-item--regular")
+                            soup_p.select_one("span.price-item--sale")
+                            or soup_p.select_one("span.price-item--regular")
                         )
-                        precio_raw = precio_tag.get_text(strip=True) if precio_tag else None
-                        precio     = _normalizar_precio(precio_raw)
+
+                        precio_raw = (
+                            precio_tag.get_text(strip=True)
+                            if precio_tag
+                            else None
+                        )
+
+                        precio = _normalizar_precio(precio_raw)
+
                         if precio is None:
                             continue
 
-                        enlace_tag = item.select_one("a")
-                        enlace     = base_url + enlace_tag["href"] if enlace_tag else None
-
-                        categoria  = coleccion_url.rstrip("/").split("/")[-1]
+                        categoria = (
+                            cat_url.rstrip("/")
+                            .split("/")[-1]
+                        )
 
                         productos.append({
-                            "name":        nombre,
-                            "price":       precio,
-                            "category":    categoria,
-                            "competitor":  "carymar",
-                            "product_url": enlace,
+                            "name": nombre,
+                            "price": precio,
+                            "category": categoria,
+                            "competitor": "ohmama",
+                            "product_url": url_producto,
                         })
 
                         time.sleep(DELAY)
 
-                    page += 1
+                    except Exception as e:
+                        print(f"[OhMama] Error producto: {e}")
 
-                except Exception as e:
-                    print(f"[Carymar] Error en {url}: {e}")
-                    break
+            except Exception as e:
+                print(f"[OhMama] Error categoría {cat_url}: {e}")
 
     except Exception as e:
-        print(f"[Carymar] Error general: {e}")
+        print(f"[OhMama] Error general: {e}")
 
-    print(f"[Carymar] {len(productos)} productos extraídos.")
+    print(f"[OhMama] {len(productos)} productos extraídos.")
+
     return productos
-
 
 # ==============================================================================
 # SCRAPER 2: SARAISA (saraisa.co)
