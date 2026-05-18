@@ -17,8 +17,10 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from routes import products, metrics, alerts, scraping
+from routes.products import router as products_router
 from routes.metrics import router as metrics_router
+from routes.alerts import router as alerts_router
+from routes.scraping import router as scraping_router
 from database.init_db import init_db
 
 # ─── Inicialización de la app ─────────────────────────────────
@@ -52,10 +54,13 @@ app.add_middleware(
 # ─── Routers ──────────────────────────────────────────────────
 # Cada router agrupa los endpoints de una responsabilidad específica.
 # El prefijo define la URL base de cada grupo.
-app.include_router(products.router, prefix="/products", tags=["Products"])
+app.include_router(products_router, prefix="/products", tags=["Products"])
+
 app.include_router(metrics_router, prefix="/metrics", tags=["Metrics"])
-app.include_router(alerts.router,   prefix="/alerts",   tags=["Alerts"])
-app.include_router(scraping.router, prefix="/scraping", tags=["Scraping"])
+
+app.include_router(alerts_router, prefix="/alerts", tags=["Alertas"])
+
+app.include_router(scraping_router, prefix="/scraping", tags=["Scraping"])
 
 # ─── Evento de inicio ─────────────────────────────────────────
 # Se ejecuta una vez cuando el servidor arranca.
