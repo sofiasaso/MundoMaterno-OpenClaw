@@ -292,29 +292,45 @@ def scrape_ohmama() -> list[dict]:
                     if not items:
                         break
 
-                    for item in items:
+                    for item in items: 
+
+                        # ─── Nombre ─────────────────────────────
                         nombre_tag = (
                             item.select_one("div.card__heading a")
-                            or item.select_one("h3.grid-view-item__title")
-                            or item.select_one(".card__heading")
+                            or item.select_one("a.full-unstyled-link")
+                            or item.select_one("h3.card__heading a")
                         )
+                        
                         nombre = nombre_tag.get_text(strip=True) if nombre_tag else None
+                        
                         if not nombre:
                             continue
-
+                        
+                        # ─── Precio ─────────────────────────────
                         precio_tag = (
                             item.select_one("span.price-item--sale")
                             or item.select_one("span.price-item--regular")
                             or item.select_one(".price__regular .price-item")
                         )
+                        
                         precio_raw = precio_tag.get_text(strip=True) if precio_tag else None
-                        precio     = _normalizar_precio(precio_raw)
+                        precio = _normalizar_precio(precio_raw)
+                        
                         if precio is None:
                             continue
+                        
+                        # ─── URL del producto ───────────────────
+                        href = nombre_tag.get("href") if nombre_tag else None
+                        
+                        if href:
+                            if href.startswith("/"):
+                                enlace = base_url + href
+                            else:
+                                enlace = href
+                        else:
+                            enlace = None
 
-                        enlace_tag = nombre_tag.get("href") if nombre_tag else None
-                        enlace     = base_url + enlace_tag if enlace_tag and enlace_tag.startswith("/") else enlace_tag
-
+                        
                         categoria  = cat_url.rstrip("/").split("/")[-1]
 
                         productos.append({
