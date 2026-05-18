@@ -3,7 +3,7 @@ fastapi==0.111.0
 uvicorn[standard]==0.29.0
 
 # ─── Base de datos ────────────────────────────────────────
-sqlalchemy==2.0.30
+sqlalchemy==2.0.41
 # SQLite viene incluido en Python, no requiere instalación adicional.
 
 # ─── Scraping ─────────────────────────────────────────────
