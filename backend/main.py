@@ -54,7 +54,7 @@ app.add_middleware(
 # El prefijo define la URL base de cada grupo.
 app.include_router(products.router, prefix="/products", tags=["Products"])
 app.include_router(metrics_router, prefix="/metrics", tags=["Metrics"])
-app.include_router(alerts.router,   prefix="/alerts",   tags=["Alertas"])
+app.include_router(alerts.router,   prefix="/alerts",   tags=["Alerts"])
 app.include_router(scraping.router, prefix="/scraping", tags=["Scraping"])
 
 # ─── Evento de inicio ─────────────────────────────────────────
