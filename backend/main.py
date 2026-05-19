@@ -1,4 +1,4 @@
-print(">>> ESTE ES EL MAIN CORRECTO")
+print("AAAAAAAAAAAAAAAAAAAA")
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
