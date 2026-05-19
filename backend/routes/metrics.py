@@ -1,9 +1,17 @@
 # ==============================================================================
-# ARCHIVO: /backend/routes/metrics.py
-# FUNCIÓN:
-# Genera métricas generales para el dashboard de Mundo Materno.
+# ARCHIVO 7: /backend/routes/metrics.py
+# TIPO: Router / Controlador API (Python)
+# FUNCIÓN: Calcula y expone métricas ejecutivas en tiempo real sobre los
+#          datos de precios y productos de Carymar, Saraisa y OhMama.
+#          Alimenta las gráficas Chart.js del dashboard de Mundo Materno.
+#
+# ENDPOINT:
+#   GET /metrics/   → Resumen ejecutivo con totales, promedios y rankings
+#
+# CÓMO PROBAR:
+#   Primero ejecutar un scraping (POST /scraping/run-scraping)
+#   Luego consultar GET /metrics/ para ver los datos calculados
 # ==============================================================================
-print(">>> METRICS IMPORTADO REAL")
 
 from fastapi import APIRouter, Depends
 from sqlalchemy.orm import Session
@@ -16,90 +24,83 @@ from models.price_history import PriceHistory
 router = APIRouter()
 
 
-@router.get("/dashboard")
-def dashboard_metrics(db: Session = Depends(get_db)):
+@router.get("/", summary="Métricas ejecutivas del mercado competidor")
+def get_metrics(db: Session = Depends(get_db)):
+    """
+    Devuelve un resumen ejecutivo con:
+    - Total de productos monitoreados
+    - Promedio de precios global y por competidor
+    - Competidor con precio promedio más bajo
+    - Total de cambios de precio detectados
+    - Desglose por categoría
+    """
 
+    # ─── Totales generales ────────────────────────────────────
     total_productos = db.query(func.count(Product.id)).scalar() or 0
+    total_cambios   = db.query(func.count(PriceHistory.id)).scalar() or 0
 
-    total_cambios = db.query(func.count(PriceHistory.id)).scalar() or 0
+    # ─── Promedio global de precios ───────────────────────────
+    avg_global = db.query(func.avg(Product.price)).scalar()
+    avg_global = round(avg_global, 2) if avg_global else 0.0
 
-    promedio_global = (
-        db.query(func.avg(Product.price)).scalar() or 0
-    )
-
-    # ==============================
-    # MÉTRICAS POR COMPETIDOR
-    # ==============================
-
-    competidores = (
+    # ─── Resumen por competidor ───────────────────────────────
+    por_competidor = (
         db.query(
             Product.competitor,
-            func.count(Product.id).label("total_productos"),
-            func.avg(Product.price).label("precio_promedio"),
-            func.min(Product.price).label("precio_minimo"),
-            func.max(Product.price).label("precio_maximo")
+            func.count(Product.id).label("total"),
+            func.avg(Product.price).label("promedio"),
+            func.min(Product.price).label("minimo"),
+            func.max(Product.price).label("maximo"),
         )
         .group_by(Product.competitor)
         .all()
     )
 
-    por_competidor = []
+    competidores = [
+        {
+            "competitor":         row.competitor,
+            "total_productos":    row.total,
+            "precio_promedio":    round(row.promedio, 2),
+            "precio_minimo":      round(row.minimo, 2),
+            "precio_maximo":      round(row.maximo, 2),
+        }
+        for row in por_competidor
+    ]
 
-    for c in competidores:
-        por_competidor.append({
-            "competitor": c.competitor,
-            "total_productos": c.total_productos,
-            "precio_promedio": round(c.precio_promedio, 2),
-            "precio_minimo": c.precio_minimo,
-            "precio_maximo": c.precio_maximo
-        })
+    # ─── Competidor más barato ────────────────────────────────
+    mas_barato = (
+        min(competidores, key=lambda x: x["precio_promedio"])
+        if competidores else None
+    )
 
-    # ==============================
-    # COMPETIDOR MÁS BARATO
-    # ==============================
-
-    competidor_barato = None
-
-    if por_competidor:
-        competidor_barato = min(
-            por_competidor,
-            key=lambda x: x["precio_promedio"]
-        )
-
-    # ==============================
-    # MÉTRICAS POR CATEGORÍA
-    # ==============================
-
-    categorias = (
+    # ─── Resumen por categoría ────────────────────────────────
+    por_categoria = (
         db.query(
             Product.category,
-            func.count(Product.id).label("total_productos"),
-            func.avg(Product.price).label("precio_promedio")
+            func.count(Product.id).label("total"),
+            func.avg(Product.price).label("promedio"),
         )
         .group_by(Product.category)
         .order_by(func.avg(Product.price).desc())
         .all()
     )
 
-    por_categoria = []
-
-    for cat in categorias:
-        por_categoria.append({
-            "category": cat.category,
-            "total_productos": cat.total_productos,
-            "precio_promedio": round(cat.precio_promedio, 2)
-        })
+    categorias = [
+        {
+            "category":        row.category,
+            "total_productos": row.total,
+            "precio_promedio": round(row.promedio, 2),
+        }
+        for row in por_categoria
+    ]
 
     return {
         "resumen_general": {
-            "total_productos": total_productos,
+            "total_productos":          total_productos,
             "total_cambios_detectados": total_cambios,
-            "precio_promedio_global": round(promedio_global, 2)
+            "precio_promedio_global":   avg_global,
         },
-
-        "competidor_mas_barato": competidor_barato,
-
-        "por_competidor": por_competidor,
-
-        "por_categoria": por_categoria
+        "competidor_mas_barato": mas_barato,
+        "por_competidor":        competidores,
+        "por_categoria":         categorias,
     }
