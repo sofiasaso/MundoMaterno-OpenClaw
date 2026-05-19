@@ -1,3 +1,5 @@
+print(">>> ESTE ES EL MAIN CORRECTO")
+
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
