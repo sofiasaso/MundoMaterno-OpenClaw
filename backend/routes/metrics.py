@@ -3,7 +3,7 @@
 # FUNCIÓN:
 # Genera métricas generales para el dashboard de Mundo Materno.
 # ==============================================================================
-print(">>> METRICS NUEVO FUNCIONANDO")
+print(">>> METRICS IMPORTADO REAL")
 
 from fastapi import APIRouter, Depends
 from sqlalchemy.orm import Session
